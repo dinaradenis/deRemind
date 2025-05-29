@@ -12,16 +12,16 @@ using System.Threading.Tasks;
 
 namespace deRemind.Services
 {
-    public class ReminderService
+    public class HybridReminderService
     {
         private ObservableCollection<Reminder> _reminders;
         private Dictionary<int, Timer> _timers = new Dictionary<int, Timer>();
 
-        public ReminderService()
+        public HybridReminderService()
         {
             _reminders = new ObservableCollection<Reminder>();
             InitializeNotifications();
-            _ = LoadRemindersAsync(); // Load reminders asynchronously
+            _ = LoadRemindersAsync();
         }
 
         public ObservableCollection<Reminder> GetReminders() => _reminders;
@@ -39,26 +39,32 @@ namespace deRemind.Services
                     .ToListAsync();
 
                 _reminders.Clear();
+                var now = DateTime.Now;
+
                 foreach (var reminder in reminders)
                 {
                     _reminders.Add(reminder);
 
-                    // Reschedule notifications for future reminders
-                    if (reminder.ReminderDateTime > DateTime.Now && !reminder.IsCompleted)
+                    // Handle overdue notifications (app was closed)
+                    if (reminder.ReminderDateTime <= now && !reminder.IsCompleted)
                     {
-                        ScheduleNotification(reminder);
-                    }
-                    // Handle overdue repeating reminders
-                    else if (reminder.IsRepeating && !reminder.IsCompleted && reminder.ReminderDateTime <= DateTime.Now)
-                    {
-                        // Calculate next occurrence
-                        var nextOccurrence = reminder.ReminderDateTime;
-                        while (nextOccurrence <= DateTime.Now)
+                        if (reminder.IsRepeating)
                         {
-                            nextOccurrence = nextOccurrence.Add(reminder.RepeatInterval);
+                            // Calculate next occurrence for repeating reminders
+                            var nextOccurrence = CalculateNextOccurrence(reminder.ReminderDateTime, reminder.RepeatInterval, now);
+                            reminder.ReminderDateTime = nextOccurrence;
+                            await UpdateReminderInDatabase(reminder);
+                            ScheduleNotification(reminder);
                         }
-                        reminder.ReminderDateTime = nextOccurrence;
-                        await UpdateReminderAsync(reminder);
+                        else
+                        {
+                            // Show overdue notification immediately
+                            ShowOverdueNotification(reminder);
+                        }
+                    }
+                    // Schedule future notifications
+                    else if (reminder.ReminderDateTime > now && !reminder.IsCompleted)
+                    {
                         ScheduleNotification(reminder);
                     }
                 }
@@ -67,6 +73,31 @@ namespace deRemind.Services
             {
                 System.Diagnostics.Debug.WriteLine($"Error loading reminders: {ex.Message}");
             }
+        }
+
+        private DateTime CalculateNextOccurrence(DateTime lastOccurrence, TimeSpan interval, DateTime currentTime)
+        {
+            var nextOccurrence = lastOccurrence;
+            while (nextOccurrence <= currentTime)
+            {
+                nextOccurrence = nextOccurrence.Add(interval);
+            }
+            return nextOccurrence;
+        }
+
+        private void ShowOverdueNotification(Reminder reminder)
+        {
+            var notification = new AppNotificationBuilder()
+                .AddArgument("action", "overdue")
+                .AddArgument("reminderId", reminder.Id.ToString())
+                .AddText($"⚠️ OVERDUE: {reminder.Title}")
+                .AddText($"Was due: {reminder.ReminderDateTime:MMM dd, yyyy - hh:mm tt}")
+                .AddText(reminder.Description)
+                .SetScenario(AppNotificationScenario.Urgent)
+                .BuildNotification();
+
+            notification.Tag = $"overdue_{reminder.Id}";
+            AppNotificationManager.Default.Show(notification);
         }
 
         public async Task AddReminderAsync(Reminder reminder)
@@ -78,7 +109,12 @@ namespace deRemind.Services
                 await context.SaveChangesAsync();
 
                 _reminders.Add(reminder);
+
+                // Schedule in-memory timer
                 ScheduleNotification(reminder);
+
+                // For production: Also schedule with Task Scheduler or other persistent method
+                // SchedulePersistentNotification(reminder);
             }
             catch (Exception ex)
             {
@@ -86,26 +122,132 @@ namespace deRemind.Services
             }
         }
 
-        public async Task UpdateReminderAsync(Reminder reminder)
+        private async Task UpdateReminderInDatabase(Reminder reminder)
         {
             try
             {
                 using var context = new ReminderDbContext();
                 context.Reminders.Update(reminder);
                 await context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error updating reminder in database: {ex.Message}");
+            }
+        }
 
-                var existing = _reminders.FirstOrDefault(r => r.Id == reminder.Id);
-                if (existing != null)
+        private void ScheduleNotification(Reminder reminder)
+        {
+            if (reminder.ReminderDateTime <= DateTime.Now || reminder.IsCompleted)
+                return;
+
+            var delay = reminder.ReminderDateTime - DateTime.Now;
+
+            // Don't schedule if delay is too long (> 24 hours) to avoid memory issues
+            if (delay.TotalHours > 24)
+            {
+                System.Diagnostics.Debug.WriteLine($"Skipping long-term scheduling for reminder {reminder.Id} (due in {delay.TotalHours:F1} hours)");
+                return;
+            }
+
+            var timer = new Timer(async (_) =>
+            {
+                ShowNotification(reminder);
+
+                // Handle repeating reminders
+                if (reminder.IsRepeating && !reminder.IsCompleted)
                 {
-                    CancelNotification(reminder.Id);
-                    var index = _reminders.IndexOf(existing);
-                    _reminders[index] = reminder;
+                    reminder.ReminderDateTime = reminder.ReminderDateTime.Add(reminder.RepeatInterval);
+                    await UpdateReminderInDatabase(reminder);
+
+                    // Update the in-memory collection
+                    var existingReminder = _reminders.FirstOrDefault(r => r.Id == reminder.Id);
+                    if (existingReminder != null)
+                    {
+                        existingReminder.ReminderDateTime = reminder.ReminderDateTime;
+                    }
+
                     ScheduleNotification(reminder);
+                }
+
+                // Clean up the timer
+                if (_timers.ContainsKey(reminder.Id))
+                {
+                    _timers[reminder.Id].Dispose();
+                    _timers.Remove(reminder.Id);
+                }
+            }, null, delay, Timeout.InfiniteTimeSpan);
+
+            // Store the timer so we can cancel it later
+            if (_timers.ContainsKey(reminder.Id))
+            {
+                _timers[reminder.Id].Dispose();
+            }
+            _timers[reminder.Id] = timer;
+        }
+
+        private void ShowNotification(Reminder reminder)
+        {
+            var notification = new AppNotificationBuilder()
+                .AddArgument("action", "remind")
+                .AddArgument("reminderId", reminder.Id.ToString())
+                .AddText(reminder.Title)
+                .AddText(reminder.Description)
+                .AddText($"⏰ {DateTime.Now:hh:mm tt}")
+                .SetScenario(AppNotificationScenario.Reminder)
+                .BuildNotification();
+
+            notification.Tag = reminder.Id.ToString();
+            notification.ExpiresOnReboot = false;
+
+            AppNotificationManager.Default.Show(notification);
+        }
+
+        // Background task to check for missed reminders (can be called periodically)
+        public async Task CheckForMissedReminders()
+        {
+            var now = DateTime.Now;
+            var missedReminders = _reminders.Where(r =>
+                r.ReminderDateTime <= now &&
+                !r.IsCompleted &&
+                !_timers.ContainsKey(r.Id)).ToList();
+
+            foreach (var reminder in missedReminders)
+            {
+                ShowOverdueNotification(reminder);
+
+                if (reminder.IsRepeating)
+                {
+                    reminder.ReminderDateTime = CalculateNextOccurrence(reminder.ReminderDateTime, reminder.RepeatInterval, now);
+                    await UpdateReminderInDatabase(reminder);
+                    ScheduleNotification(reminder);
+                }
+            }
+        }
+
+        // Existing methods...
+        public async Task CompleteReminderAsync(int id)
+        {
+            try
+            {
+                using var context = new ReminderDbContext();
+                var reminder = await context.Reminders.FindAsync(id);
+                if (reminder != null)
+                {
+                    reminder.IsCompleted = true;
+                    await context.SaveChangesAsync();
+                }
+
+                var localReminder = _reminders.FirstOrDefault(r => r.Id == id);
+                if (localReminder != null)
+                {
+                    localReminder.IsCompleted = true;
+                    CancelNotification(id);
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error updating reminder: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error completing reminder: {ex.Message}");
             }
         }
 
@@ -134,130 +276,40 @@ namespace deRemind.Services
             }
         }
 
-        public async Task CompleteReminderAsync(int id)
-        {
-            try
-            {
-                using var context = new ReminderDbContext();
-                var reminder = await context.Reminders.FindAsync(id);
-                if (reminder != null)
-                {
-                    reminder.IsCompleted = true;
-                    await context.SaveChangesAsync();
-                }
-
-                var localReminder = _reminders.FirstOrDefault(r => r.Id == id);
-                if (localReminder != null)
-                {
-                    localReminder.IsCompleted = true;
-                    CancelNotification(id);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error completing reminder: {ex.Message}");
-            }
-        }
-
-        // Synchronous wrapper methods for backward compatibility
-        public void AddReminder(Reminder reminder) => _ = AddReminderAsync(reminder);
-        public void UpdateReminder(Reminder reminder) => _ = UpdateReminderAsync(reminder);
-        public void DeleteReminder(int id) => _ = DeleteReminderAsync(id);
-        public void CompleteReminder(int id) => _ = CompleteReminderAsync(id);
-
-        private void InitializeNotifications()
-        {
-            // Register for notifications
-            AppNotificationManager.Default.NotificationInvoked += OnNotificationInvoked;
-            AppNotificationManager.Default.Register();
-        }
-
-        private void OnNotificationInvoked(AppNotificationManager sender, AppNotificationActivatedEventArgs args)
-        {
-            // Handle notification click
-            var arguments = args.Argument;
-            if (int.TryParse(arguments, out int reminderId))
-            {
-                var reminder = _reminders.FirstOrDefault(r => r.Id == reminderId);
-                if (reminder != null && reminder.IsRepeating)
-                {
-                    // Schedule next occurrence for repeating reminders
-                    reminder.ReminderDateTime = reminder.ReminderDateTime.Add(reminder.RepeatInterval);
-                    _ = UpdateReminderAsync(reminder);
-                    ScheduleNotification(reminder);
-                }
-            }
-        }
-
-        private void ScheduleNotification(Reminder reminder)
-        {
-            if (reminder.ReminderDateTime <= DateTime.Now || reminder.IsCompleted)
-                return;
-
-            var delay = reminder.ReminderDateTime - DateTime.Now;
-
-            var timer = new Timer((_) =>
-            {
-                ShowNotification(reminder);
-
-                // Handle repeating reminders
-                if (reminder.IsRepeating && !reminder.IsCompleted)
-                {
-                    reminder.ReminderDateTime = reminder.ReminderDateTime.Add(reminder.RepeatInterval);
-                    _ = UpdateReminderAsync(reminder);
-                    ScheduleNotification(reminder);
-                }
-
-                // Clean up the timer
-                if (_timers.ContainsKey(reminder.Id))
-                {
-                    _timers[reminder.Id].Dispose();
-                    _timers.Remove(reminder.Id);
-                }
-            }, null, delay, Timeout.InfiniteTimeSpan);
-
-            // Store the timer so we can cancel it later
-            if (_timers.ContainsKey(reminder.Id))
-            {
-                _timers[reminder.Id].Dispose();
-            }
-            _timers[reminder.Id] = timer;
-        }
-
-        private void ShowNotification(Reminder reminder)
-        {
-            var notification = new AppNotificationBuilder()
-                .AddArgument("action", "remind")
-                .AddArgument("reminderId", reminder.Id.ToString())
-                .AddText(reminder.Title)
-                .AddText(reminder.Description)
-                .SetScenario(AppNotificationScenario.Reminder)
-                .BuildNotification();
-
-            notification.Tag = reminder.Id.ToString();
-            notification.ExpiresOnReboot = true;
-
-            AppNotificationManager.Default.Show(notification);
-        }
-
         private void CancelNotification(int reminderId)
         {
             try
             {
-                // Cancel the timer
                 if (_timers.ContainsKey(reminderId))
                 {
                     _timers[reminderId].Dispose();
                     _timers.Remove(reminderId);
                 }
 
-                // Remove any existing notification
-                AppNotificationManager.Default.RemoveByTagAsync(reminderId.ToString());
+                // Updated to use RemoveByTagAsync instead of RemoveByTag
+                AppNotificationManager.Default.RemoveByTagAsync(reminderId.ToString()).AsTask().Wait();
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Error removing notification: {ex.Message}");
             }
         }
+
+        private void InitializeNotifications()
+        {
+            AppNotificationManager.Default.NotificationInvoked += OnNotificationInvoked;
+            AppNotificationManager.Default.Register();
+        }
+
+        private void OnNotificationInvoked(AppNotificationManager sender, AppNotificationActivatedEventArgs args)
+        {
+            // Handle notification interactions
+            System.Diagnostics.Debug.WriteLine($"Notification activated with args: {args.Argument}");
+        }
+
+        // Synchronous wrapper methods for backward compatibility
+        public void AddReminder(Reminder reminder) => _ = AddReminderAsync(reminder);
+        public void DeleteReminder(int id) => _ = DeleteReminderAsync(id);
+        public void CompleteReminder(int id) => _ = CompleteReminderAsync(id);
     }
 }

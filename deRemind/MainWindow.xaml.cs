@@ -10,12 +10,12 @@ namespace deRemind
 {
     public sealed partial class MainWindow : Window
     {
-        private readonly ReminderService _reminderService;
+        private readonly HybridReminderService _reminderService;
 
         public MainWindow()
         {
             this.InitializeComponent();
-            _reminderService = new ReminderService();
+            _reminderService = new HybridReminderService();
             RemindersListView.ItemsSource = _reminderService.GetReminders();
 
             // Set default date and time
