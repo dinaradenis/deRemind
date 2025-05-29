@@ -1,5 +1,5 @@
-﻿// Alternative ReminderService with Timer-based scheduling
-using deRemind.Models;
+﻿using deRemind.Models;
+using deRemind.Data;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 using System;
@@ -7,61 +7,163 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading;
+using Microsoft.EntityFrameworkCore;
+using System.Threading.Tasks;
 
 namespace deRemind.Services
 {
     public class ReminderService
     {
         private ObservableCollection<Reminder> _reminders;
-        private static int _nextId = 1;
         private Dictionary<int, Timer> _timers = new Dictionary<int, Timer>();
 
         public ReminderService()
         {
             _reminders = new ObservableCollection<Reminder>();
             InitializeNotifications();
+            _ = LoadRemindersAsync(); // Load reminders asynchronously
         }
 
         public ObservableCollection<Reminder> GetReminders() => _reminders;
 
-        public void AddReminder(Reminder reminder)
+        private async Task LoadRemindersAsync()
         {
-            reminder.Id = _nextId++;
-            _reminders.Add(reminder);
-            ScheduleNotification(reminder);
+            try
+            {
+                using var context = new ReminderDbContext();
+                await context.Database.EnsureCreatedAsync();
+
+                var reminders = await context.Reminders
+                    .Where(r => !r.IsCompleted || r.IsRepeating)
+                    .OrderBy(r => r.ReminderDateTime)
+                    .ToListAsync();
+
+                _reminders.Clear();
+                foreach (var reminder in reminders)
+                {
+                    _reminders.Add(reminder);
+
+                    // Reschedule notifications for future reminders
+                    if (reminder.ReminderDateTime > DateTime.Now && !reminder.IsCompleted)
+                    {
+                        ScheduleNotification(reminder);
+                    }
+                    // Handle overdue repeating reminders
+                    else if (reminder.IsRepeating && !reminder.IsCompleted && reminder.ReminderDateTime <= DateTime.Now)
+                    {
+                        // Calculate next occurrence
+                        var nextOccurrence = reminder.ReminderDateTime;
+                        while (nextOccurrence <= DateTime.Now)
+                        {
+                            nextOccurrence = nextOccurrence.Add(reminder.RepeatInterval);
+                        }
+                        reminder.ReminderDateTime = nextOccurrence;
+                        await UpdateReminderAsync(reminder);
+                        ScheduleNotification(reminder);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error loading reminders: {ex.Message}");
+            }
         }
 
-        public void UpdateReminder(Reminder reminder)
+        public async Task AddReminderAsync(Reminder reminder)
         {
-            var existing = _reminders.FirstOrDefault(r => r.Id == reminder.Id);
-            if (existing != null)
+            try
             {
-                CancelNotification(reminder.Id);
-                var index = _reminders.IndexOf(existing);
-                _reminders[index] = reminder;
+                using var context = new ReminderDbContext();
+                context.Reminders.Add(reminder);
+                await context.SaveChangesAsync();
+
+                _reminders.Add(reminder);
                 ScheduleNotification(reminder);
             }
-        }
-
-        public void DeleteReminder(int id)
-        {
-            var reminder = _reminders.FirstOrDefault(r => r.Id == id);
-            if (reminder != null)
+            catch (Exception ex)
             {
-                _reminders.Remove(reminder);
-                CancelNotification(id);
+                System.Diagnostics.Debug.WriteLine($"Error adding reminder: {ex.Message}");
             }
         }
 
-        public void CompleteReminder(int id)
+        public async Task UpdateReminderAsync(Reminder reminder)
         {
-            var reminder = _reminders.FirstOrDefault(r => r.Id == id);
-            if (reminder != null)
+            try
             {
-                reminder.IsCompleted = true;
-                CancelNotification(id);
+                using var context = new ReminderDbContext();
+                context.Reminders.Update(reminder);
+                await context.SaveChangesAsync();
+
+                var existing = _reminders.FirstOrDefault(r => r.Id == reminder.Id);
+                if (existing != null)
+                {
+                    CancelNotification(reminder.Id);
+                    var index = _reminders.IndexOf(existing);
+                    _reminders[index] = reminder;
+                    ScheduleNotification(reminder);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error updating reminder: {ex.Message}");
             }
         }
+
+        public async Task DeleteReminderAsync(int id)
+        {
+            try
+            {
+                using var context = new ReminderDbContext();
+                var reminder = await context.Reminders.FindAsync(id);
+                if (reminder != null)
+                {
+                    context.Reminders.Remove(reminder);
+                    await context.SaveChangesAsync();
+                }
+
+                var localReminder = _reminders.FirstOrDefault(r => r.Id == id);
+                if (localReminder != null)
+                {
+                    _reminders.Remove(localReminder);
+                    CancelNotification(id);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error deleting reminder: {ex.Message}");
+            }
+        }
+
+        public async Task CompleteReminderAsync(int id)
+        {
+            try
+            {
+                using var context = new ReminderDbContext();
+                var reminder = await context.Reminders.FindAsync(id);
+                if (reminder != null)
+                {
+                    reminder.IsCompleted = true;
+                    await context.SaveChangesAsync();
+                }
+
+                var localReminder = _reminders.FirstOrDefault(r => r.Id == id);
+                if (localReminder != null)
+                {
+                    localReminder.IsCompleted = true;
+                    CancelNotification(id);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error completing reminder: {ex.Message}");
+            }
+        }
+
+        // Synchronous wrapper methods for backward compatibility
+        public void AddReminder(Reminder reminder) => _ = AddReminderAsync(reminder);
+        public void UpdateReminder(Reminder reminder) => _ = UpdateReminderAsync(reminder);
+        public void DeleteReminder(int id) => _ = DeleteReminderAsync(id);
+        public void CompleteReminder(int id) => _ = CompleteReminderAsync(id);
 
         private void InitializeNotifications()
         {
@@ -81,6 +183,7 @@ namespace deRemind.Services
                 {
                     // Schedule next occurrence for repeating reminders
                     reminder.ReminderDateTime = reminder.ReminderDateTime.Add(reminder.RepeatInterval);
+                    _ = UpdateReminderAsync(reminder);
                     ScheduleNotification(reminder);
                 }
             }
@@ -101,6 +204,7 @@ namespace deRemind.Services
                 if (reminder.IsRepeating && !reminder.IsCompleted)
                 {
                     reminder.ReminderDateTime = reminder.ReminderDateTime.Add(reminder.RepeatInterval);
+                    _ = UpdateReminderAsync(reminder);
                     ScheduleNotification(reminder);
                 }
 
