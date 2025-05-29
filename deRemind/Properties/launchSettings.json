@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "deRemind (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "deRemind (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
