@@ -8,59 +8,81 @@
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
-  IgnorableNamespaces="uap rescap">
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  IgnorableNamespaces="uap rescap desktop uap3 uap5">
 
-  <Identity
-    Name="7fc8472b-de72-4abb-b77f-dd37af6f25da"
-    Publisher="CN=dinar"
-    Version="1.0.0.0" />
+	<Identity
+	  Name="7fc8472b-de72-4abb-b77f-dd37af6f25da"
+	  Publisher="CN=dinar"
+	  Version="1.0.0.0" />
 
-  <mp:PhoneIdentity PhoneProductId="7fc8472b-de72-4abb-b77f-dd37af6f25da" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
+	<mp:PhoneIdentity PhoneProductId="7fc8472b-de72-4abb-b77f-dd37af6f25da" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
-  <Properties>
-    <DisplayName>deRemind</DisplayName>
-    <PublisherDisplayName>dinar</PublisherDisplayName>
-    <Logo>Assets\StoreLogo.png</Logo>
-  </Properties>
+	<Properties>
+		<DisplayName>deRemind</DisplayName>
+		<PublisherDisplayName>dinar</PublisherDisplayName>
+		<Logo>Assets\StoreLogo.png</Logo>
+	</Properties>
 
-  <Dependencies>
-    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
-    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
-  </Dependencies>
+	<Dependencies>
+		<TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+		<TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+	</Dependencies>
 
-  <Resources>
-    <Resource Language="x-generate"/>
-  </Resources>
+	<Resources>
+		<Resource Language="x-generate"/>
+	</Resources>
 
-  <Applications>
-    <Application Id="App"
-      Executable="$targetnametoken$.exe"
-      EntryPoint="$targetentrypoint$">
-      <uap:VisualElements
-        DisplayName="deRemind"
-        Description="deRemind"
-        BackgroundColor="transparent"
-        Square150x150Logo="Assets\Square150x150Logo.png"
-        Square44x44Logo="Assets\Square44x44Logo.png">
-        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
-        <uap:SplashScreen Image="Assets\SplashScreen.png" />
-      </uap:VisualElements>
-		<Extensions>
-			<desktop:Extension Category="windows.toastNotificationActivation">
-				<desktop:ToastNotificationActivation ToastActivatorCLSID="C432E8D5-1CE5-4925-8583-1AFC0BDD5F6D" />
-			</desktop:Extension>
-			<com:Extension Category="windows.comServer">
-				<com:ComServer>
-					<com:ExeServer Executable="deRemind\deRemind.exe" DisplayName="deRemind" Arguments="----AppNotificationActivated:">
-						<com:Class Id="C432E8D5-1CE5-4925-8583-1AFC0BDD5F6D" />
-					</com:ExeServer>
-				</com:ComServer>
-			</com:Extension>
-		</Extensions>
-    </Application>
-  </Applications>
+	<Applications>
+		<Application Id="App"
+		  Executable="$targetnametoken$.exe"
+		  EntryPoint="$targetentrypoint$">
+			<uap:VisualElements
+			  DisplayName="deRemind"
+			  Description="deRemind - Smart Reminder Application"
+			  BackgroundColor="transparent"
+			  Square150x150Logo="Assets\Square150x150Logo.png"
+			  Square44x44Logo="Assets\Square44x44Logo.png">
+				<uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+				<uap:SplashScreen Image="Assets\SplashScreen.png" />
+			</uap:VisualElements>
 
-  <Capabilities>
-    <rescap:Capability Name="runFullTrust" />
-  </Capabilities>
+			<Extensions>
+				<!-- Toast Notification Activation -->
+				<desktop:Extension Category="windows.toastNotificationActivation">
+					<desktop:ToastNotificationActivation ToastActivatorCLSID="C432E8D5-1CE5-4925-8583-1AFC0BDD5F6D" />
+				</desktop:Extension>
+
+				<!-- COM Server for Notifications -->
+				<com:Extension Category="windows.comServer">
+					<com:ComServer>
+						<com:ExeServer Executable="deRemind\deRemind.exe" DisplayName="deRemind" Arguments="----AppNotificationActivated:">
+							<com:Class Id="C432E8D5-1CE5-4925-8583-1AFC0BDD5F6D" />
+						</com:ExeServer>
+					</com:ComServer>
+				</com:Extension>
+
+				<!-- Startup Task for Auto-Start -->
+				<desktop:Extension Category="windows.startupTask">
+					<desktop:StartupTask TaskId="deRemindStartupTask"
+										Enabled="true"
+										DisplayName="deRemind Background Service" />
+				</desktop:Extension>
+
+				<!-- Full Trust Process for Background Tasks -->
+				<desktop:Extension Category="windows.fullTrustProcess">
+					<desktop:FullTrustProcess>
+						<desktop:ParameterGroup GroupId="BackgroundGroup" Parameters="--background"/>
+					</desktop:FullTrustProcess>
+				</desktop:Extension>
+			</Extensions>
+		</Application>
+	</Applications>
+
+	<Capabilities>
+		<uap:Capability Name="appointments"/>
+		<Capability Name="internetClient"/>
+		<rescap:Capability Name="runFullTrust"/>
+	</Capabilities>
+
 </Package>

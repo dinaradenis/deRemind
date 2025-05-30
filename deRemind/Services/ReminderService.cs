@@ -298,7 +298,6 @@ namespace deRemind.Services
         private void InitializeNotifications()
         {
             AppNotificationManager.Default.NotificationInvoked += OnNotificationInvoked;
-            AppNotificationManager.Default.Register();
         }
 
         private void OnNotificationInvoked(AppNotificationManager sender, AppNotificationActivatedEventArgs args)
