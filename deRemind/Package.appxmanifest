@@ -48,12 +48,10 @@
 			</uap:VisualElements>
 
 			<Extensions>
-				<!-- Toast Notification Activation -->
 				<desktop:Extension Category="windows.toastNotificationActivation">
 					<desktop:ToastNotificationActivation ToastActivatorCLSID="C432E8D5-1CE5-4925-8583-1AFC0BDD5F6D" />
 				</desktop:Extension>
 
-				<!-- COM Server for Notifications -->
 				<com:Extension Category="windows.comServer">
 					<com:ComServer>
 						<com:ExeServer Executable="deRemind\deRemind.exe" DisplayName="deRemind" Arguments="----AppNotificationActivated:">
@@ -62,18 +60,10 @@
 					</com:ComServer>
 				</com:Extension>
 
-				<!-- Startup Task for Auto-Start -->
 				<desktop:Extension Category="windows.startupTask">
 					<desktop:StartupTask TaskId="deRemindStartupTask"
 										Enabled="true"
 										DisplayName="deRemind Background Service" />
-				</desktop:Extension>
-
-				<!-- Full Trust Process for Background Tasks -->
-				<desktop:Extension Category="windows.fullTrustProcess">
-					<desktop:FullTrustProcess>
-						<desktop:ParameterGroup GroupId="BackgroundGroup" Parameters="--background"/>
-					</desktop:FullTrustProcess>
 				</desktop:Extension>
 			</Extensions>
 		</Application>
