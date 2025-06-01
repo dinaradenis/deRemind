@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.Windows.AppNotifications;
 using System;
+using System.Threading.Tasks;
 using Windows.UI.WindowManagement;
 using WinRT.Interop;
 
@@ -15,43 +16,65 @@ namespace deRemind
     {
         private readonly HybridReminderService _reminderService;
         private bool _isClosing = false;
-        private Microsoft.UI.Windowing.AppWindow appWindow;
+        private Microsoft.UI.Windowing.AppWindow? _appWindow;
 
         public MainWindow()
         {
-
-            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-            var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
-            appWindow = Microsoft.UI.Windowing.AppWindow.GetFromWindowId(windowId);
-
             this.InitializeComponent();
+            InitializeWindow();
+
             _reminderService = new HybridReminderService();
             RemindersListView.ItemsSource = _reminderService.GetReminders();
 
-            // Set default date and time
-            ReminderDatePicker.Date = DateTime.Today;
-            ReminderTimePicker.Time = DateTime.Now.TimeOfDay.Add(TimeSpan.FromHours(1));
-
-            // Handle repeating checkbox change
-            RepeatingCheckBox.Checked += (s, e) => RepeatIntervalComboBox.Visibility = Visibility.Visible;
-            RepeatingCheckBox.Unchecked += (s, e) => RepeatIntervalComboBox.Visibility = Visibility.Collapsed;
-
-            // Override the close behavior
-            this.Closed += MainWindow_Closed;
+            InitializeDefaults();
+            SetupEventHandlers();
 
             this.Title = "deRemind";
         }
 
+        private void InitializeWindow()
+        {
+            try
+            {
+                var hwnd = WindowNative.GetWindowHandle(this);
+                var windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+                _appWindow = Microsoft.UI.Windowing.AppWindow.GetFromWindowId(windowId);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error initializing window: {ex.Message}");
+            }
+        }
+
+        private void InitializeDefaults()
+        {
+            // Set default date and time more efficiently
+            var now = DateTime.Now;
+            ReminderDatePicker.Date = now.Date;
+            ReminderTimePicker.Time = now.TimeOfDay.Add(TimeSpan.FromHours(1));
+        }
+
+        private void SetupEventHandlers()
+        {
+            // Handle repeating checkbox change with lambda for better performance
+            RepeatingCheckBox.Checked += (_, _) => RepeatIntervalComboBox.Visibility = Visibility.Visible;
+            RepeatingCheckBox.Unchecked += (_, _) => RepeatIntervalComboBox.Visibility = Visibility.Collapsed;
+
+            this.Closed += MainWindow_Closed;
+        }
+
         private void MainWindow_Closed(object sender, WindowEventArgs args)
         {
-            // Cancel the close operation and hide the window instead
             if (!_isClosing)
             {
                 args.Handled = true;
-                appWindow.Hide();
-
-                // Optional: Show a notification that the app is still running
+                _appWindow?.Hide();
                 ShowTrayNotification();
+            }
+            else
+            {
+                // Cleanup resources
+                _reminderService?.Dispose();
             }
         }
 
@@ -73,23 +96,12 @@ namespace deRemind
             }
         }
 
-        // Method to show the window when notification is clicked
         public void ShowWindow()
         {
             try
             {
-                // Show and activate the window
                 this.Activate();
-
-                // Bring window to foreground
-                var hwnd = WindowNative.GetWindowHandle(this);
-                var windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
-                appWindow = Microsoft.UI.Windowing.AppWindow.GetFromWindowId(windowId);
-
-                if (appWindow != null)
-                {
-                    appWindow.Show();
-                }
+                _appWindow?.Show();
             }
             catch (Exception ex)
             {
@@ -97,26 +109,25 @@ namespace deRemind
             }
         }
 
-        // Method to properly close the app
         public void ExitApplication()
         {
             _isClosing = true;
+            _reminderService?.Dispose();
             this.Close();
             Application.Current.Exit();
         }
 
-        // Add a menu item or button to exit the app properly
         private void ExitButton_Click(object sender, RoutedEventArgs e)
         {
             ExitApplication();
         }
 
-        // Rest of your existing methods remain the same...
-        private void AddReminderButton_Click(object sender, RoutedEventArgs e)
+        private async void AddReminderButton_Click(object sender, RoutedEventArgs e)
         {
+            // Validate input first
             if (string.IsNullOrWhiteSpace(TitleTextBox.Text))
             {
-                ShowMessage("Please enter a title for the reminder.");
+                await ShowMessage("Please enter a title for the reminder.");
                 return;
             }
 
@@ -124,52 +135,78 @@ namespace deRemind
 
             if (reminderDateTime <= DateTime.Now)
             {
-                ShowMessage("Please select a future date and time.");
+                await ShowMessage("Please select a future date and time.");
                 return;
             }
 
+            // Create reminder object
             var reminder = new Reminder
             {
-                Title = TitleTextBox.Text,
-                Description = DescriptionTextBox.Text,
+                Title = TitleTextBox.Text.Trim(),
+                Description = DescriptionTextBox.Text?.Trim() ?? string.Empty,
                 ReminderDateTime = reminderDateTime,
                 IsRepeating = RepeatingCheckBox.IsChecked == true
             };
 
+            // Set repeat interval if applicable
             if (reminder.IsRepeating)
             {
-                switch (RepeatIntervalComboBox.SelectedIndex)
+                reminder.RepeatInterval = RepeatIntervalComboBox.SelectedIndex switch
                 {
-                    case 0: // Daily
-                        reminder.RepeatInterval = TimeSpan.FromDays(1);
-                        break;
-                    case 1: // Weekly
-                        reminder.RepeatInterval = TimeSpan.FromDays(7);
-                        break;
-                    case 2: // Monthly
-                        reminder.RepeatInterval = TimeSpan.FromDays(30);
-                        break;
+                    0 => TimeSpan.FromDays(1),    // Daily
+                    1 => TimeSpan.FromDays(7),    // Weekly
+                    2 => TimeSpan.FromDays(30),   // Monthly
+                    _ => TimeSpan.FromDays(1)     // Default to daily
+                };
+            }
+
+            try
+            {
+                // Disable button to prevent double-clicks
+                AddReminderButton.IsEnabled = false;
+
+                await _reminderService.AddReminderAsync(reminder);
+                ClearForm();
+                await ShowMessage("Reminder added successfully!");
+            }
+            catch (Exception ex)
+            {
+                await ShowMessage($"Error adding reminder: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error adding reminder: {ex}");
+            }
+            finally
+            {
+                AddReminderButton.IsEnabled = true;
+            }
+        }
+
+        private async void CompleteButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button { Tag: int reminderId })
+            {
+                try
+                {
+                    await _reminderService.CompleteReminderAsync(reminderId);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error completing reminder: {ex.Message}");
                 }
             }
-
-            _reminderService.AddReminder(reminder);
-            ClearForm();
-            ShowMessage("Reminder added successfully!");
         }
 
-        private void CompleteButton_Click(object sender, RoutedEventArgs e)
+        private async void DeleteButton_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is Button button && button.Tag is int reminderId)
+            if (sender is Button { Tag: int reminderId })
             {
-                _reminderService.CompleteReminder(reminderId);
-            }
-        }
-
-        private void DeleteButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is Button button && button.Tag is int reminderId)
-            {
-                _reminderService.DeleteReminder(reminderId);
+                try
+                {
+                    await _reminderService.DeleteReminderAsync(reminderId);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error deleting reminder: {ex.Message}");
+                }
             }
         }
 
@@ -177,22 +214,33 @@ namespace deRemind
         {
             TitleTextBox.Text = string.Empty;
             DescriptionTextBox.Text = string.Empty;
-            ReminderDatePicker.Date = DateTime.Today;
-            ReminderTimePicker.Time = DateTime.Now.TimeOfDay.Add(TimeSpan.FromHours(1));
+
+            var now = DateTime.Now;
+            ReminderDatePicker.Date = now.Date;
+            ReminderTimePicker.Time = now.TimeOfDay.Add(TimeSpan.FromHours(1));
+
             RepeatingCheckBox.IsChecked = false;
             RepeatIntervalComboBox.Visibility = Visibility.Collapsed;
+            RepeatIntervalComboBox.SelectedIndex = 0;
         }
 
-        private async void ShowMessage(string message)
+        private async Task ShowMessage(string message)
         {
-            var dialog = new ContentDialog
+            try
             {
-                Title = "deRemind",
-                Content = message,
-                CloseButtonText = "OK",
-                XamlRoot = this.Content.XamlRoot
-            };
-            await dialog.ShowAsync();
+                var dialog = new ContentDialog
+                {
+                    Title = "deRemind",
+                    Content = message,
+                    CloseButtonText = "OK",
+                    XamlRoot = this.Content.XamlRoot
+                };
+                await dialog.ShowAsync();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error showing message dialog: {ex.Message}");
+            }
         }
     }
 }
