@@ -21,19 +21,12 @@ using Microsoft.Windows.AppNotifications;
 
 namespace deRemind
 {
-    /// <summary>
-    /// Provides application-specific behavior to supplement the default Application class.
-    /// </summary>
     public partial class App : Application
     {
-        private Window? _window;
+        private MainWindow? _window;
         private BackgroundServiceManager? _backgroundServiceManager;
         private StartupTaskManager? _startupTaskManager;
 
-        /// <summary>
-        /// Initializes the singleton application object.  This is the first line of authored code
-        /// executed, and as such is the logical equivalent of main() or WinMain().
-        /// </summary>
         public App()
         {
             InitializeComponent();
@@ -43,10 +36,6 @@ namespace deRemind
             AppNotificationManager.Default.Register();
         }
 
-        /// <summary>
-        /// Invoked when the application is launched.
-        /// </summary>
-        /// <param name="args">Details about the launch request and process.</param>
         protected override async void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
         {
             _window = new MainWindow();
@@ -63,7 +52,6 @@ namespace deRemind
             {
                 if (arg.Contains("AppNotificationActivated"))
                 {
-                    // Handle notification activation
                     System.Diagnostics.Debug.WriteLine("App launched by notification");
                     break;
                 }
@@ -94,7 +82,6 @@ namespace deRemind
                 _backgroundServiceManager = new BackgroundServiceManager();
                 _startupTaskManager = new StartupTaskManager();
 
-                // Register background task
                 var backgroundRegistered = await _backgroundServiceManager.RegisterBackgroundTaskAsync();
                 if (backgroundRegistered)
                 {
@@ -105,7 +92,6 @@ namespace deRemind
                     System.Diagnostics.Debug.WriteLine("Failed to register background task");
                 }
 
-                // Enable startup task (user will be prompted)
                 var startupEnabled = await _startupTaskManager.EnableStartupAsync();
                 if (startupEnabled)
                 {
@@ -126,7 +112,6 @@ namespace deRemind
         {
             System.Diagnostics.Debug.WriteLine($"Notification invoked with arguments: {args.Argument}");
 
-            // Parse arguments
             var arguments = args.Argument;
 
             // Show the main window when notification is clicked
@@ -134,7 +119,7 @@ namespace deRemind
             {
                 _window.DispatcherQueue.TryEnqueue(() =>
                 {
-                    _window.Activate();
+                    _window.ShowWindow(); // Use our custom method instead of Activate()
                 });
             }
             else
@@ -144,6 +129,9 @@ namespace deRemind
                 _window.Activate();
             }
         }
+
+        // Method to get the main window instance
+        public MainWindow? GetMainWindow() => _window;
 
         public BackgroundServiceManager? BackgroundServiceManager => _backgroundServiceManager;
         public StartupTaskManager? StartupTaskManager => _startupTaskManager;

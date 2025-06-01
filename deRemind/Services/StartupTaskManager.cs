@@ -1,5 +1,4 @@
-﻿// Services/StartupTaskManager.cs
-using Windows.ApplicationModel;
+﻿using Windows.ApplicationModel;
 using System;
 using System.Threading.Tasks;
 using System.Diagnostics;

@@ -1,5 +1,4 @@
-﻿// Services/BackgroundServiceManager.cs
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using System;
 using System.Diagnostics;
 using System.Linq;

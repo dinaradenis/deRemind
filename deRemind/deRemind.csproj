@@ -12,7 +12,6 @@
 		<EnableMsixTooling>true</EnableMsixTooling>
 		<Nullable>enable</Nullable>
 		<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-		<!-- Enable background task support -->
 		<GenerateLibraryLayout>true</GenerateLibraryLayout>
 	</PropertyGroup>
 

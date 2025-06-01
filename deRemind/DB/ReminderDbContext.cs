@@ -44,7 +44,6 @@ namespace deRemind.Data
                 await context.Database.EnsureCreatedAsync();
 
                 var now = DateTime.Now;
-                // ... rest of your code
             }
             catch (Exception ex)
             {

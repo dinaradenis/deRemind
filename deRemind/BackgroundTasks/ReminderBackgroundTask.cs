@@ -1,5 +1,4 @@
-﻿// BackgroundTasks/ReminderBackgroundTask.cs
-using Windows.ApplicationModel.Background;
+﻿using Windows.ApplicationModel.Background;
 using Windows.Storage;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
