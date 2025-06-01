@@ -34,22 +34,5 @@ namespace deRemind.Data
                         v => new TimeSpan(v));
             });
         }
-
-        private async Task CheckAndTriggerReminders()
-        {
-            try
-            {
-                // Ensure database is created
-                using var context = new ReminderDbContext();
-                await context.Database.EnsureCreatedAsync();
-
-                var now = DateTime.Now;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Database error in background task: {ex.Message}");
-                // Log to event log or file for debugging
-            }
-        }
     }
 }

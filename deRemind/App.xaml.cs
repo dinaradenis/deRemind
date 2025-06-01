@@ -24,7 +24,6 @@ namespace deRemind
     public partial class App : Application
     {
         private MainWindow? _window;
-        private BackgroundServiceManager? _backgroundServiceManager;
         private StartupTaskManager? _startupTaskManager;
 
         public App()
@@ -40,71 +39,30 @@ namespace deRemind
         {
             _window = new MainWindow();
 
-            // Initialize background services
-            await InitializeBackgroundServicesAsync();
+            // Only initialize startup task
+            await InitializeStartupTaskAsync();
 
             // Handle startup arguments
             var startupArgs = Environment.GetCommandLineArgs();
-            bool startMinimized = false;
+            bool startMinimized = startupArgs.Any(arg => arg.Contains("startup"));
 
-            // Check if launched by startup task or notification
-            foreach (var arg in startupArgs)
-            {
-                if (arg.Contains("AppNotificationActivated"))
-                {
-                    System.Diagnostics.Debug.WriteLine("App launched by notification");
-                    break;
-                }
-                else if (arg.Contains("startup"))
-                {
-                    startMinimized = true;
-                    System.Diagnostics.Debug.WriteLine("App launched by startup task");
-                    break;
-                }
-            }
-
-            // Only show window if not started minimized
             if (!startMinimized)
             {
                 _window.Activate();
             }
-            else
-            {
-                // Run in background, just initialize services
-                System.Diagnostics.Debug.WriteLine("Running in background mode");
-            }
         }
 
-        private async Task InitializeBackgroundServicesAsync()
+        private async Task InitializeStartupTaskAsync()
         {
             try
             {
-                _backgroundServiceManager = new BackgroundServiceManager();
                 _startupTaskManager = new StartupTaskManager();
-
-                var backgroundRegistered = await _backgroundServiceManager.RegisterBackgroundTaskAsync();
-                if (backgroundRegistered)
-                {
-                    System.Diagnostics.Debug.WriteLine("Background task registered successfully");
-                }
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine("Failed to register background task");
-                }
-
                 var startupEnabled = await _startupTaskManager.EnableStartupAsync();
-                if (startupEnabled)
-                {
-                    System.Diagnostics.Debug.WriteLine("Startup task enabled successfully");
-                }
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine("Startup task not enabled");
-                }
+                System.Diagnostics.Debug.WriteLine($"Startup task enabled: {startupEnabled}");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error initializing background services: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error initializing startup task: {ex.Message}");
             }
         }
 
@@ -129,11 +87,5 @@ namespace deRemind
                 _window.Activate();
             }
         }
-
-        // Method to get the main window instance
-        public MainWindow? GetMainWindow() => _window;
-
-        public BackgroundServiceManager? BackgroundServiceManager => _backgroundServiceManager;
-        public StartupTaskManager? StartupTaskManager => _startupTaskManager;
     }
 }
