@@ -66,13 +66,21 @@ namespace deRemind.Services
                 await context.Database.EnsureCreatedAsync(_cancellationTokenSource.Token);
 
                 var now = DateTime.Now;
-                var cutoffDate = now.AddDays(-7);
-
-                // Optimized query with specific columns and indexing hints
+                var cutoffDate = DateTime.Now.AddDays(-7);
                 var reminders = await context.Reminders
                     .Where(r => !r.IsCompleted ||
                                (r.IsCompleted && r.ReminderDateTime > cutoffDate) ||
                                r.IsRepeating)
+                    .Select(r => new Reminder
+                    {
+                        Id = r.Id,
+                        Title = r.Title,
+                        Description = r.Description,
+                        ReminderDateTime = r.ReminderDateTime,
+                        IsCompleted = r.IsCompleted,
+                        IsRepeating = r.IsRepeating,
+                        RepeatInterval = r.RepeatInterval
+                    })
                     .OrderBy(r => r.ReminderDateTime)
                     .AsNoTracking()
                     .ToListAsync(_cancellationTokenSource.Token);

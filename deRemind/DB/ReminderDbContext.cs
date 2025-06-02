@@ -45,6 +45,9 @@ namespace deRemind.Data
                 entity.HasIndex(e => e.ReminderDateTime).HasDatabaseName("IX_Reminder_DateTime");
                 entity.HasIndex(e => e.IsCompleted).HasDatabaseName("IX_Reminder_IsCompleted");
                 entity.HasIndex(e => new { e.IsCompleted, e.ReminderDateTime }).HasDatabaseName("IX_Reminder_Completed_DateTime");
+                entity.HasIndex(e => new { e.IsCompleted, e.ReminderDateTime, e.IsRepeating })
+                    .HasDatabaseName("IX_Reminder_Composite_Main");
+                entity.HasIndex(e => e.Id).IsUnique().HasDatabaseName("IX_Reminder_Id");
             });
         }
     }
