@@ -20,6 +20,7 @@ namespace deRemind.Services
         private readonly object _lockObject = new();
         private readonly SemaphoreSlim _dbSemaphore = new(1, 1);
         private bool _disposed = false;
+        private bool _initialized = false;
 
         public HybridReminderService()
         {
@@ -28,11 +29,16 @@ namespace deRemind.Services
 
             // Background timer to check for missed reminders and reschedule long-term ones
             _backgroundCheckTimer = new Timer(BackgroundCheck, null, TimeSpan.FromMinutes(1), TimeSpan.FromHours(1));
-
-            _ = LoadRemindersAsync();
         }
 
         public ObservableCollection<Reminder> GetReminders() => _reminders;
+
+        public async Task InitializeAsync()
+        {
+            if (_initialized) return;
+            await LoadRemindersAsync();
+            _initialized = true;
+        }
 
         private async Task LoadRemindersAsync()
         {

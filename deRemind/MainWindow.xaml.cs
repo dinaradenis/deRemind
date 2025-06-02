@@ -25,7 +25,6 @@ namespace deRemind
             InitializeWindow();
 
             _reminderService = new HybridReminderService();
-            RemindersListView.ItemsSource = _reminderService.GetReminders();
 
             InitializeDefaults();
             SetupEventHandlers();
@@ -57,9 +56,15 @@ namespace deRemind
 
         public async Task InitializeRemindersAsync()
         {
+            // Initialize the service and wait for reminders to load
             await _reminderService.InitializeAsync();
-        }
 
+            // Set the ItemsSource on the UI thread
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                RemindersListView.ItemsSource = _reminderService.GetReminders();
+            });
+        }
 
         private void SetupEventHandlers()
         {
@@ -178,7 +183,7 @@ namespace deRemind
                 }
                 catch (Exception ex)
                 {
-                    DispatcherQueue.TryEnqueue(async() =>
+                    DispatcherQueue.TryEnqueue(async () =>
                     {
                         await ShowMessage($"Error adding reminder: {ex.Message}");
                     });
@@ -190,7 +195,6 @@ namespace deRemind
                 }
             });
         }
-
 
         private async void CompleteButton_Click(object sender, RoutedEventArgs e)
         {
