@@ -9,13 +9,21 @@ namespace deRemind.Data
 {
     public class ReminderDbContext : DbContext
     {
+        private static readonly string ConnectionString;
         public DbSet<Reminder> Reminders { get; set; }
 
-        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        static ReminderDbContext()
         {
             var localFolder = ApplicationData.Current.LocalFolder.Path;
             var dbPath = Path.Combine(localFolder, "reminders.db");
-            optionsBuilder.UseSqlite($"Data Source={dbPath}");
+            ConnectionString = $"Data Source={dbPath};Cache=Shared;Pooling=true;";
+        }
+
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        {
+            optionsBuilder.UseSqlite(ConnectionString);
+            optionsBuilder.EnableSensitiveDataLogging(false);
+            optionsBuilder.EnableServiceProviderCaching();
         }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)

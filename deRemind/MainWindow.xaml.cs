@@ -17,6 +17,7 @@ namespace deRemind
         private readonly HybridReminderService _reminderService;
         private bool _isClosing = false;
         private Microsoft.UI.Windowing.AppWindow? _appWindow;
+        private readonly BackgroundOperationQueue _backgroundQueue = new BackgroundOperationQueue();
 
         public MainWindow()
         {
@@ -53,6 +54,12 @@ namespace deRemind
             ReminderDatePicker.Date = now.Date;
             ReminderTimePicker.Time = now.TimeOfDay.Add(TimeSpan.FromHours(1));
         }
+
+        public async Task InitializeRemindersAsync()
+        {
+            await _reminderService.InitializeAsync();
+        }
+
 
         private void SetupEventHandlers()
         {
@@ -124,7 +131,7 @@ namespace deRemind
 
         private async void AddReminderButton_Click(object sender, RoutedEventArgs e)
         {
-            // Validate input first
+            // Validation here — keep your existing validation code!
             if (string.IsNullOrWhiteSpace(TitleTextBox.Text))
             {
                 await ShowMessage("Please enter a title for the reminder.");
@@ -132,53 +139,58 @@ namespace deRemind
             }
 
             var reminderDateTime = ReminderDatePicker.Date.Date.Add(ReminderTimePicker.Time);
-
             if (reminderDateTime <= DateTime.Now)
             {
                 await ShowMessage("Please select a future date and time.");
                 return;
             }
 
-            // Create reminder object
+            AddReminderButton.IsEnabled = false;
+
             var reminder = new Reminder
             {
                 Title = TitleTextBox.Text.Trim(),
                 Description = DescriptionTextBox.Text?.Trim() ?? string.Empty,
                 ReminderDateTime = reminderDateTime,
-                IsRepeating = RepeatingCheckBox.IsChecked == true
+                IsRepeating = RepeatingCheckBox.IsChecked == true,
+                RepeatInterval = RepeatingCheckBox.IsChecked == true
+                    ? RepeatIntervalComboBox.SelectedIndex switch
+                    {
+                        0 => TimeSpan.FromDays(1),
+                        1 => TimeSpan.FromDays(7),
+                        2 => TimeSpan.FromDays(30),
+                        _ => TimeSpan.FromDays(1)
+                    }
+                    : TimeSpan.Zero
             };
 
-            // Set repeat interval if applicable
-            if (reminder.IsRepeating)
+            await _backgroundQueue.EnqueueAsync(async () =>
             {
-                reminder.RepeatInterval = RepeatIntervalComboBox.SelectedIndex switch
+                try
                 {
-                    0 => TimeSpan.FromDays(1),    // Daily
-                    1 => TimeSpan.FromDays(7),    // Weekly
-                    2 => TimeSpan.FromDays(30),   // Monthly
-                    _ => TimeSpan.FromDays(1)     // Default to daily
-                };
-            }
+                    await _reminderService.AddReminderAsync(reminder);
 
-            try
-            {
-                // Disable button to prevent double-clicks
-                AddReminderButton.IsEnabled = false;
-
-                await _reminderService.AddReminderAsync(reminder);
-                ClearForm();
-                await ShowMessage("Reminder added successfully!");
-            }
-            catch (Exception ex)
-            {
-                await ShowMessage($"Error adding reminder: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"Error adding reminder: {ex}");
-            }
-            finally
-            {
-                AddReminderButton.IsEnabled = true;
-            }
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        ClearForm();
+                        _ = ShowMessage("Reminder added successfully!");
+                    });
+                }
+                catch (Exception ex)
+                {
+                    DispatcherQueue.TryEnqueue(async() =>
+                    {
+                        await ShowMessage($"Error adding reminder: {ex.Message}");
+                    });
+                    System.Diagnostics.Debug.WriteLine($"Error adding reminder: {ex}");
+                }
+                finally
+                {
+                    DispatcherQueue.TryEnqueue(() => AddReminderButton.IsEnabled = true);
+                }
+            });
         }
+
 
         private async void CompleteButton_Click(object sender, RoutedEventArgs e)
         {
