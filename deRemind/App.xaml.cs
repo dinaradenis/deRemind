@@ -28,10 +28,10 @@ namespace deRemind
     {
         private MainWindow? _window;
         private StartupTaskManager? _startupTaskManager;
-        private readonly Lazy<ReminderService> _reminderService =
-            new(() => new ReminderService(), LazyThreadSafetyMode.ExecutionAndPublication);
+        private readonly Lazy<HybridReminderService> _reminderService =
+            new(() => new HybridReminderService(), LazyThreadSafetyMode.ExecutionAndPublication);
 
-        public ReminderService ReminderService => _reminderService.Value;
+        public HybridReminderService ReminderService => _reminderService.Value;
 
         public App()
         {
