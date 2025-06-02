@@ -14,7 +14,7 @@ namespace deRemind
 {
     public sealed partial class MainWindow : Window
     {
-        private readonly HybridReminderService _reminderService;
+        private readonly ReminderService _reminderService;
         private bool _isClosing = false;
         private Microsoft.UI.Windowing.AppWindow? _appWindow;
         private readonly BackgroundOperationQueue _backgroundQueue = new BackgroundOperationQueue();
@@ -24,7 +24,7 @@ namespace deRemind
             this.InitializeComponent();
             InitializeWindow();
 
-            _reminderService = new HybridReminderService();
+            _reminderService = new ReminderService();
 
             InitializeDefaults();
             SetupEventHandlers();

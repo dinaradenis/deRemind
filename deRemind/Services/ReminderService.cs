@@ -3,100 +3,102 @@ using deRemind.Data;
 using Microsoft.Windows.AppNotifications;
 using Microsoft.Windows.AppNotifications.Builder;
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading;
 using Microsoft.EntityFrameworkCore;
 using System.Threading.Tasks;
+using Microsoft.UI.Dispatching;
+using System.Collections.Generic;
 
 namespace deRemind.Services
 {
-    public class HybridReminderService : IDisposable
+    public class ReminderService : IDisposable
     {
         private readonly ObservableCollection<Reminder> _reminders;
-        private readonly Dictionary<int, Timer> _timers = new();
-        private readonly Timer _backgroundCheckTimer;
-        private readonly object _lockObject = new();
+        private readonly Timer _processingTimer;
         private readonly SemaphoreSlim _dbSemaphore = new(1, 1);
+        private readonly CancellationTokenSource _cancellationTokenSource = new();
+        private readonly DispatcherQueue? _dispatcherQueue;
         private bool _disposed = false;
-        private bool _initialized = false;
 
-        public HybridReminderService()
+        // High-performance collections
+        private readonly ConcurrentDictionary<int, DateTime> _nextNotificationTimes = new();
+        private readonly ConcurrentHashSet<int> _processedOverdueReminders = new();
+        private readonly ConcurrentQueue<DatabaseOperation> _databaseOperations = new();
+
+        // Batch processing
+        private readonly Timer _batchProcessor;
+        private volatile bool _processingBatch = false;
+
+        // Performance metrics
+        private DateTime _lastProcessingTime = DateTime.MinValue;
+        private readonly object _statsLock = new();
+        private int _processedNotifications = 0;
+
+        public ReminderService(DispatcherQueue? dispatcherQueue = null)
         {
             _reminders = new ObservableCollection<Reminder>();
-            InitializeNotifications();
+            _dispatcherQueue = dispatcherQueue;
 
-            // Background timer to check for missed reminders and reschedule long-term ones
-            _backgroundCheckTimer = new Timer(BackgroundCheck, null, TimeSpan.FromMinutes(1), TimeSpan.FromHours(1));
+            _processingTimer = new Timer(ProcessAllOperations, null,
+                TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+
+            _batchProcessor = new Timer(ProcessDatabaseBatch, null,
+                TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+
+            InitializeNotifications();
+            _ = InitializeAsync();
         }
 
         public ObservableCollection<Reminder> GetReminders() => _reminders;
 
         public async Task InitializeAsync()
         {
-            if (_initialized) return;
             await LoadRemindersAsync();
-            _initialized = true;
         }
 
         private async Task LoadRemindersAsync()
         {
-            await _dbSemaphore.WaitAsync();
+            if (_disposed) return;
+
+            await _dbSemaphore.WaitAsync(_cancellationTokenSource.Token);
             try
             {
-                using var context = new ReminderDbContext();
-                await context.Database.EnsureCreatedAsync();
-
-                var reminders = await context.Reminders
-                    .Where(r => !r.IsCompleted || r.IsRepeating)
-                    .OrderBy(r => r.ReminderDateTime)
-                    .AsNoTracking() // Performance: No change tracking needed
-                    .ToListAsync();
-
+                var context = DatabaseService.Instance.GetContext();
                 var now = DateTime.Now;
-                var toUpdate = new List<Reminder>();
-
-                lock (_lockObject)
-                {
-                    _reminders.Clear();
-                }
-
-                foreach (var reminder in reminders)
-                {
-                    // Handle overdue notifications
-                    if (reminder.ReminderDateTime <= now && !reminder.IsCompleted)
+                var cutoffDate = now.AddDays(-7);
+                var reminderData = await context.Reminders
+                    .Where(r => !r.IsCompleted || (r.IsCompleted && r.ReminderDateTime > cutoffDate) || r.IsRepeating)
+                    .Select(r => new
                     {
-                        if (reminder.IsRepeating)
-                        {
-                            var nextOccurrence = CalculateNextOccurrence(reminder.ReminderDateTime, reminder.RepeatInterval, now);
-                            reminder.ReminderDateTime = nextOccurrence;
-                            toUpdate.Add(reminder);
-                        }
-                        else
-                        {
-                            ShowOverdueNotification(reminder);
-                        }
-                    }
+                        r.Id,
+                        r.Title,
+                        r.Description,
+                        r.ReminderDateTime,
+                        r.IsCompleted,
+                        r.IsRepeating,
+                        r.RepeatInterval
+                    })
+                    .OrderBy(r => r.ReminderDateTime)
+                    .AsNoTracking()
+                    .ToListAsync(_cancellationTokenSource.Token);
 
-                    lock (_lockObject)
-                    {
-                        _reminders.Add(reminder);
-                    }
-
-                    // Schedule notifications efficiently
-                    if (reminder.ReminderDateTime > now && !reminder.IsCompleted)
-                    {
-                        ScheduleNotification(reminder);
-                    }
-                }
-
-                // Batch update database operations
-                if (toUpdate.Count > 0)
+                var reminders = reminderData.Select(r => new Reminder
                 {
-                    await BatchUpdateRemindersAsync(toUpdate);
-                }
+                    Id = r.Id,
+                    Title = r.Title,
+                    Description = r.Description,
+                    ReminderDateTime = r.ReminderDateTime,
+                    IsCompleted = r.IsCompleted,
+                    IsRepeating = r.IsRepeating,
+                    RepeatInterval = r.RepeatInterval
+                }).ToList();
+
+                await ProcessLoadedReminders(reminders, now);
             }
+            catch (OperationCanceledException) { }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Error loading reminders: {ex.Message}");
@@ -107,218 +109,272 @@ namespace deRemind.Services
             }
         }
 
-        private async Task BatchUpdateRemindersAsync(List<Reminder> reminders)
+        private async Task ProcessLoadedReminders(List<Reminder> reminders, DateTime now)
         {
-            try
-            {
-                using var context = new ReminderDbContext();
-                context.Reminders.UpdateRange(reminders);
-                await context.SaveChangesAsync();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error batch updating reminders: {ex.Message}");
-            }
-        }
+            var batchOperations = new List<DatabaseOperation>();
+            var processedReminders = new List<Reminder>();
 
-        private void BackgroundCheck(object? state)
-        {
-            if (_disposed) return;
-
-            try
+            foreach (var reminder in reminders)
             {
-                var now = DateTime.Now;
-                var remindersToCheck = new List<Reminder>();
-
-                lock (_lockObject)
+                if (ShouldProcessReminder(reminder, now))
                 {
-                    remindersToCheck.AddRange(_reminders.Where(r => !r.IsCompleted));
-                }
-
-                // Check for missed reminders
-                var missedReminders = remindersToCheck
-                    .Where(r => r.ReminderDateTime <= now && !_timers.ContainsKey(r.Id))
-                    .ToList();
-
-                foreach (var reminder in missedReminders)
-                {
-                    ShowOverdueNotification(reminder);
-
                     if (reminder.IsRepeating)
                     {
-                        reminder.ReminderDateTime = CalculateNextOccurrence(reminder.ReminderDateTime, reminder.RepeatInterval, now);
-                        _ = UpdateReminderInDatabaseAsync(reminder);
-                        ScheduleNotification(reminder);
+                        reminder.ReminderDateTime = CalculateNextOccurrence(
+                            reminder.ReminderDateTime, reminder.RepeatInterval, now);
+                        batchOperations.Add(new DatabaseOperation(OperationType.Update, reminder));
+                    }
+                    else
+                    {
+                        ProcessOverdueReminder(reminder);
                     }
                 }
 
-                // Schedule long-term reminders that are now within 24 hours
-                var longTermReminders = remindersToCheck
-                    .Where(r => r.ReminderDateTime > now &&
-                               r.ReminderDateTime <= now.AddHours(24) &&
-                               !_timers.ContainsKey(r.Id))
-                    .ToList();
+                processedReminders.Add(reminder);
+                CacheNotificationTime(reminder, now);
+            }
 
-                foreach (var reminder in longTermReminders)
+            UpdateUICollection(() =>
+            {
+                _reminders.Clear();
+                foreach (var reminder in processedReminders)
                 {
-                    ScheduleNotification(reminder);
+                    _reminders.Add(reminder);
+                }
+            });
+
+            foreach (var operation in batchOperations)
+            {
+                _databaseOperations.Enqueue(operation);
+            }
+        }
+
+        private bool ShouldProcessReminder(Reminder reminder, DateTime now)
+        {
+            return reminder.ReminderDateTime <= now &&
+                   !reminder.IsCompleted &&
+                   !_processedOverdueReminders.Contains(reminder.Id);
+        }
+
+        private void ProcessOverdueReminder(Reminder reminder)
+        {
+            _ = Task.Run(() => ShowOverdueNotification(reminder));
+            _processedOverdueReminders.TryAdd(reminder.Id);
+        }
+
+        private void CacheNotificationTime(Reminder reminder, DateTime now)
+        {
+            if (reminder.ReminderDateTime > now && !reminder.IsCompleted)
+            {
+                _nextNotificationTimes.TryAdd(reminder.Id, reminder.ReminderDateTime);
+            }
+        }
+
+        private async void ProcessAllOperations(object? state)
+        {
+            if (_disposed) return;
+
+            var now = DateTime.Now;
+            if (now - _lastProcessingTime < TimeSpan.FromSeconds(25))
+                return;
+
+            _lastProcessingTime = now;
+
+            try
+            {
+                var notificationTasks = new List<Task>();
+                var updateOperations = new List<DatabaseOperation>();
+                var toRemove = new List<int>();
+
+                foreach (var kvp in _nextNotificationTimes)
+                {
+                    if (now >= kvp.Value)
+                    {
+                        var reminder = FindReminderById(kvp.Key);
+                        if (reminder != null)
+                        {
+                            notificationTasks.Add(Task.Run(() => ShowNotification(reminder)));
+                            if (reminder.IsRepeating)
+                            {
+                                reminder.ReminderDateTime = reminder.ReminderDateTime.Add(reminder.RepeatInterval);
+                                _nextNotificationTimes.TryUpdate(kvp.Key, reminder.ReminderDateTime, kvp.Value);
+                                updateOperations.Add(new DatabaseOperation(OperationType.Update, reminder));
+                            }
+                            else
+                            {
+                                toRemove.Add(kvp.Key);
+                            }
+                        }
+                    }
+                }
+
+                foreach (var id in toRemove)
+                {
+                    _nextNotificationTimes.TryRemove(id, out _);
+                }
+
+                foreach (var operation in updateOperations)
+                {
+                    _databaseOperations.Enqueue(operation);
+                }
+
+                if (notificationTasks.Count > 0)
+                {
+                    await Task.WhenAll(notificationTasks);
+                    lock (_statsLock)
+                    {
+                        _processedNotifications += notificationTasks.Count;
+                    }
+                }
+
+                if (updateOperations.Count > 0)
+                {
+                    UpdateUICollection(() =>
+                    {
+                        foreach (var op in updateOperations)
+                        {
+                            var existing = _reminders.FirstOrDefault(r => r.Id == op.Reminder.Id);
+                            if (existing != null)
+                            {
+                                existing.ReminderDateTime = op.Reminder.ReminderDateTime;
+                            }
+                        }
+                    });
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error in background check: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error in processing: {ex.Message}");
+            }
+        }
+
+        private Reminder? FindReminderById(int id)
+        {
+            return _reminders.FirstOrDefault(r => r.Id == id);
+        }
+
+        private async void ProcessDatabaseBatch(object? state)
+        {
+            if (_disposed || _processingBatch || _databaseOperations.IsEmpty) return;
+
+            _processingBatch = true;
+            try
+            {
+                var operations = new List<DatabaseOperation>();
+                while (_databaseOperations.TryDequeue(out var operation) && operations.Count < 100)
+                {
+                    operations.Add(operation);
+                }
+
+                if (operations.Count > 0)
+                {
+                    await ExecuteBatchOperations(operations);
+                }
+            }
+            finally
+            {
+                _processingBatch = false;
+            }
+        }
+
+        private async Task ExecuteBatchOperations(List<DatabaseOperation> operations)
+        {
+            await _dbSemaphore.WaitAsync(_cancellationTokenSource.Token);
+            try
+            {
+                var context = DatabaseService.Instance.GetContext();
+                var updates = operations.Where(o => o.Type == OperationType.Update).ToList();
+                var deletes = operations.Where(o => o.Type == OperationType.Delete).ToList();
+
+                if (updates.Count > 0)
+                {
+                    var updateIds = updates.Select(u => u.Reminder.Id).ToList();
+                    var updateLookup = updates.ToDictionary(u => u.Reminder.Id, u => u.Reminder);
+
+                    await context.Reminders
+                        .Where(r => updateIds.Contains(r.Id))
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(r => r.ReminderDateTime, r => updateLookup[r.Id].ReminderDateTime)
+                            .SetProperty(r => r.IsCompleted, r => updateLookup[r.Id].IsCompleted),
+                            _cancellationTokenSource.Token);
+                }
+
+                if (deletes.Count > 0)
+                {
+                    var deleteIds = deletes.Select(d => d.Reminder.Id).ToList();
+                    await context.Reminders
+                        .Where(r => deleteIds.Contains(r.Id))
+                        .ExecuteDeleteAsync(_cancellationTokenSource.Token);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Batch operation error: {ex.Message}");
+            }
+            finally
+            {
+                _dbSemaphore.Release();
             }
         }
 
         private DateTime CalculateNextOccurrence(DateTime lastOccurrence, TimeSpan interval, DateTime currentTime)
         {
-            var occurrencesPassed = (long)((currentTime - lastOccurrence).Ticks / interval.Ticks) + 1;
-            return lastOccurrence.Add(TimeSpan.FromTicks(interval.Ticks * occurrencesPassed));
-        }
+            if (interval.TotalMilliseconds <= 0)
+                return currentTime.AddHours(1);
 
-        private void ShowOverdueNotification(Reminder reminder)
-        {
-            try
-            {
-                var notification = new AppNotificationBuilder()
-                    .AddArgument("action", "overdue")
-                    .AddArgument("reminderId", reminder.Id.ToString())
-                    .AddText($"⚠️ OVERDUE: {reminder.Title}")
-                    .AddText($"Was due: {reminder.ReminderDateTime:MMM dd, yyyy - hh:mm tt}")
-                    .AddText(reminder.Description)
-                    .SetScenario(AppNotificationScenario.Urgent)
-                    .BuildNotification();
-
-                notification.Tag = $"overdue_{reminder.Id}";
-                AppNotificationManager.Default.Show(notification);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error showing overdue notification: {ex.Message}");
-            }
+            var elapsed = currentTime - lastOccurrence;
+            var intervals = (long)Math.Ceiling(elapsed.TotalMilliseconds / interval.TotalMilliseconds);
+            return lastOccurrence.Add(TimeSpan.FromMilliseconds(interval.TotalMilliseconds * intervals));
         }
 
         public async Task AddReminderAsync(Reminder reminder)
         {
-            await _dbSemaphore.WaitAsync();
-            try
-            {
-                using var context = new ReminderDbContext();
-                context.Reminders.Add(reminder);
-                await context.SaveChangesAsync();
+            if (_disposed) return;
 
-                // Get the generated ID
-                lock (_lockObject)
-                {
-                    _reminders.Add(reminder);
-                }
+            _databaseOperations.Enqueue(new DatabaseOperation(OperationType.Add, reminder));
+            UpdateUICollection(() => _reminders.Add(reminder));
 
-                ScheduleNotification(reminder);
-            }
-            catch (Exception ex)
+            if (reminder.ReminderDateTime > DateTime.Now && !reminder.IsCompleted)
             {
-                System.Diagnostics.Debug.WriteLine($"Error adding reminder: {ex.Message}");
-            }
-            finally
-            {
-                _dbSemaphore.Release();
+                _nextNotificationTimes.TryAdd(reminder.Id, reminder.ReminderDateTime);
             }
         }
 
-        private async Task UpdateReminderInDatabaseAsync(Reminder reminder)
+        public Task CompleteReminderAsync(int id)
         {
-            await _dbSemaphore.WaitAsync();
-            try
-            {
-                using var context = new ReminderDbContext();
-                context.Entry(reminder).State = EntityState.Modified;
-                await context.SaveChangesAsync();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error updating reminder: {ex.Message}");
-            }
-            finally
-            {
-                _dbSemaphore.Release();
-            }
-        }
+            if (_disposed) return Task.CompletedTask;
 
-        private void ScheduleNotification(Reminder reminder)
-        {
-            if (reminder.ReminderDateTime <= DateTime.Now || reminder.IsCompleted)
-                return;
-
-            var delay = reminder.ReminderDateTime - DateTime.Now;
-
-            // Only schedule in-memory timers for reminders within 24 hours
-            if (delay.TotalHours > 24)
+            var reminder = FindReminderById(id);
+            if (reminder != null)
             {
-                System.Diagnostics.Debug.WriteLine($"Long-term reminder {reminder.Id} will be scheduled later");
-                return;
-            }
-
-            // Ensure minimum delay to prevent immediate firing
-            if (delay.TotalSeconds < 1)
-                delay = TimeSpan.FromSeconds(1);
-
-            lock (_lockObject)
-            {
-                // Cancel existing timer if any
-                if (_timers.TryGetValue(reminder.Id, out var existingTimer))
+                reminder.IsCompleted = true;
+                _databaseOperations.Enqueue(new DatabaseOperation(OperationType.Update, reminder));
+                _nextNotificationTimes.TryRemove(id, out _);
+                UpdateUICollection(() =>
                 {
-                    existingTimer.Dispose();
-                }
-
-                var timer = new Timer(async (_) =>
-                {
-                    await HandleReminderTrigger(reminder);
-                }, null, delay, Timeout.InfiniteTimeSpan);
-
-                _timers[reminder.Id] = timer;
-            }
-        }
-
-        private async Task HandleReminderTrigger(Reminder reminder)
-        {
-            try
-            {
-                ShowNotification(reminder);
-
-                if (reminder.IsRepeating && !reminder.IsCompleted)
-                {
-                    reminder.ReminderDateTime = reminder.ReminderDateTime.Add(reminder.RepeatInterval);
-                    await UpdateReminderInDatabaseAsync(reminder);
-
-                    // Update in-memory collection
-                    lock (_lockObject)
+                    var localReminder = FindReminderById(id);
+                    if (localReminder != null)
                     {
-                        var existingReminder = _reminders.FirstOrDefault(r => r.Id == reminder.Id);
-                        if (existingReminder != null)
-                        {
-                            existingReminder.ReminderDateTime = reminder.ReminderDateTime;
-                        }
+                        localReminder.IsCompleted = true;
                     }
+                });
+            }
+            return Task.CompletedTask;
+        }
 
-                    ScheduleNotification(reminder);
-                }
-            }
-            catch (Exception ex)
+        public Task DeleteReminderAsync(int id)
+        {
+            if (_disposed) return Task.CompletedTask;
+
+            var reminder = FindReminderById(id);
+            if (reminder != null)
             {
-                System.Diagnostics.Debug.WriteLine($"Error handling reminder trigger: {ex.Message}");
+                _databaseOperations.Enqueue(new DatabaseOperation(OperationType.Delete, reminder));
+                UpdateUICollection(() => _reminders.Remove(reminder));
+                _nextNotificationTimes.TryRemove(id, out _);
+                _processedOverdueReminders.TryRemove(id);
             }
-            finally
-            {
-                // Clean up the timer
-                lock (_lockObject)
-                {
-                    if (_timers.TryGetValue(reminder.Id, out var timer))
-                    {
-                        timer.Dispose();
-                        _timers.Remove(reminder.Id);
-                    }
-                }
-            }
+            return Task.CompletedTask;
         }
 
         private void ShowNotification(Reminder reminder)
@@ -330,7 +386,7 @@ namespace deRemind.Services
                     .AddArgument("reminderId", reminder.Id.ToString())
                     .AddText(reminder.Title)
                     .AddText(reminder.Description)
-                    .AddText($"⏰ {DateTime.Now:hh:mm tt}")
+                    .AddText($"\u23F0 {DateTime.Now:hh:mm tt}")
                     .SetScenario(AppNotificationScenario.Reminder)
                     .BuildNotification();
 
@@ -345,92 +401,41 @@ namespace deRemind.Services
             }
         }
 
-        public async Task CompleteReminderAsync(int id)
+        private void ShowOverdueNotification(Reminder reminder)
         {
-            await _dbSemaphore.WaitAsync();
             try
             {
-                using var context = new ReminderDbContext();
-                var reminder = await context.Reminders.FindAsync(id);
-                if (reminder != null)
-                {
-                    reminder.IsCompleted = true;
-                    await context.SaveChangesAsync();
-                }
+                var notification = new AppNotificationBuilder()
+                    .AddArgument("action", "overdue")
+                    .AddArgument("reminderId", reminder.Id.ToString())
+                    .AddText($"⚠ OVERDUE: {reminder.Title}")
+                    .AddText($"Was due: {reminder.ReminderDateTime:MMM dd, yyyy - hh:mm tt}")
+                    .AddText(reminder.Description)
+                    .SetScenario(AppNotificationScenario.Urgent)
+                    .BuildNotification();
 
-                lock (_lockObject)
-                {
-                    var localReminder = _reminders.FirstOrDefault(r => r.Id == id);
-                    if (localReminder != null)
-                    {
-                        localReminder.IsCompleted = true;
-                    }
-                }
-
-                CancelNotification(id);
+                notification.Tag = $"overdue_{reminder.Id}";
+                AppNotificationManager.Default.Show(notification);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error completing reminder: {ex.Message}");
-            }
-            finally
-            {
-                _dbSemaphore.Release();
+                System.Diagnostics.Debug.WriteLine($"Error showing overdue notification: {ex.Message}");
             }
         }
 
-        public async Task DeleteReminderAsync(int id)
+        private void UpdateUICollection(Action action)
         {
-            await _dbSemaphore.WaitAsync();
-            try
+            if (_dispatcherQueue?.HasThreadAccess == true)
             {
-                using var context = new ReminderDbContext();
-                var reminder = await context.Reminders.FindAsync(id);
-                if (reminder != null)
+                action();
+            }
+            else
+            {
+                _dispatcherQueue?.TryEnqueue(() =>
                 {
-                    context.Reminders.Remove(reminder);
-                    await context.SaveChangesAsync();
-                }
-
-                lock (_lockObject)
-                {
-                    var localReminder = _reminders.FirstOrDefault(r => r.Id == id);
-                    if (localReminder != null)
-                    {
-                        _reminders.Remove(localReminder);
-                    }
-                }
-
-                CancelNotification(id);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error deleting reminder: {ex.Message}");
-            }
-            finally
-            {
-                _dbSemaphore.Release();
-            }
-        }
-
-        private void CancelNotification(int reminderId)
-        {
-            try
-            {
-                lock (_lockObject)
-                {
-                    if (_timers.TryGetValue(reminderId, out var timer))
-                    {
-                        timer.Dispose();
-                        _timers.Remove(reminderId);
-                    }
-                }
-
-                _ = AppNotificationManager.Default.RemoveByTagAsync(reminderId.ToString());
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error canceling notification: {ex.Message}");
+                    try { action(); }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Error updating UI: {ex.Message}"); }
+                });
             }
         }
 
@@ -448,31 +453,49 @@ namespace deRemind.Services
 
         private void OnNotificationInvoked(AppNotificationManager sender, AppNotificationActivatedEventArgs args)
         {
-            System.Diagnostics.Debug.WriteLine($"Notification activated with args: {args.Argument}");
+            System.Diagnostics.Debug.WriteLine($"Notification activated: {args.Argument}");
         }
 
-        // Synchronous wrapper methods for backward compatibility
-        public void AddReminder(Reminder reminder) => _ = AddReminderAsync(reminder);
-        public void DeleteReminder(int id) => _ = DeleteReminderAsync(id);
-        public void CompleteReminder(int id) => _ = CompleteReminderAsync(id);
+        public int GetProcessedNotificationCount()
+        {
+            lock (_statsLock)
+            {
+                return _processedNotifications;
+            }
+        }
 
         public void Dispose()
         {
             if (_disposed) return;
             _disposed = true;
 
-            _backgroundCheckTimer?.Dispose();
+            _cancellationTokenSource.Cancel();
 
-            lock (_lockObject)
-            {
-                foreach (var timer in _timers.Values)
-                {
-                    timer.Dispose();
-                }
-                _timers.Clear();
-            }
+            _processingTimer?.Dispose();
+            _batchProcessor?.Dispose();
 
             _dbSemaphore?.Dispose();
+            _cancellationTokenSource?.Dispose();
+
+            _nextNotificationTimes.Clear();
+            _processedOverdueReminders.Clear();
+
+            DatabaseService.Instance.DisposeContext();
         }
+    }
+
+    public enum OperationType { Add, Update, Delete }
+
+    public record DatabaseOperation(OperationType Type, Reminder Reminder);
+
+    public class ConcurrentHashSet<T> : IDisposable
+    {
+        private readonly ConcurrentDictionary<T, byte> _dictionary = new();
+
+        public bool TryAdd(T item) => _dictionary.TryAdd(item, 0);
+        public bool TryRemove(T item) => _dictionary.TryRemove(item, out _);
+        public bool Contains(T item) => _dictionary.ContainsKey(item);
+        public void Clear() => _dictionary.Clear();
+        public void Dispose() => _dictionary.Clear();
     }
 }
