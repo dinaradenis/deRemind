@@ -14,6 +14,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.ApplicationModel;
 using Windows.ApplicationModel.Activation;
@@ -27,6 +28,10 @@ namespace deRemind
     {
         private MainWindow? _window;
         private StartupTaskManager? _startupTaskManager;
+        private readonly Lazy<HybridReminderService> _reminderService =
+            new(() => new HybridReminderService(), LazyThreadSafetyMode.ExecutionAndPublication);
+
+        public HybridReminderService ReminderService => _reminderService.Value;
 
         public App()
         {

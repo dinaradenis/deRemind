@@ -77,7 +77,15 @@
 
                 <ListView x:Name="RemindersListView" 
                          Grid.Row="1"
-                         SelectionMode="None">
+                         SelectionMode="None"
+                          IsItemClickEnabled="True"
+                          IncrementalLoadingThreshold="10"
+                          DataFetchSize="50">
+                    <ListView.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <VirtualizingStackPanel VirtualizationMode="Standard" />
+                        </ItemsPanelTemplate>
+                    </ListView.ItemsPanel>
                     <ListView.ItemTemplate>
                         <DataTemplate>
                             <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" 

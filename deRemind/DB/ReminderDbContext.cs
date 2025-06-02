@@ -1,5 +1,6 @@
 ﻿using deRemind.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using System;
 using System.IO;
 using System.Threading.Tasks;
@@ -24,6 +25,7 @@ namespace deRemind.Data
             optionsBuilder.UseSqlite(ConnectionString);
             optionsBuilder.EnableSensitiveDataLogging(false);
             optionsBuilder.EnableServiceProviderCaching();
+            optionsBuilder.ConfigureWarnings(w => w.Ignore(RelationalEventId.AmbientTransactionWarning));
         }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -40,6 +42,9 @@ namespace deRemind.Data
                     .HasConversion(
                         v => v.Ticks,
                         v => new TimeSpan(v));
+                entity.HasIndex(e => e.ReminderDateTime).HasDatabaseName("IX_Reminder_DateTime");
+                entity.HasIndex(e => e.IsCompleted).HasDatabaseName("IX_Reminder_IsCompleted");
+                entity.HasIndex(e => new { e.IsCompleted, e.ReminderDateTime }).HasDatabaseName("IX_Reminder_Completed_DateTime");
             });
         }
     }
