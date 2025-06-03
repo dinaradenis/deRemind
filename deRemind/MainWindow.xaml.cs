@@ -9,6 +9,7 @@ using System;
 using System.Threading.Tasks;
 using Windows.UI.WindowManagement;
 using WinRT.Interop;
+using WinUIEx;
 
 namespace deRemind
 {
@@ -22,6 +23,7 @@ namespace deRemind
         public MainWindow()
         {
             this.InitializeComponent();
+            this.SetIcon("Assets\\deRemind.ico");
             InitializeWindow();
 
             _reminderService = new HybridReminderService();
