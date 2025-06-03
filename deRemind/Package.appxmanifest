@@ -9,7 +9,8 @@
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
-  IgnorableNamespaces="uap rescap desktop uap3 uap5">
+  xmlns:uap18="http://schemas.microsoft.com/appx/manifest/uap/windows10/18"
+  IgnorableNamespaces="uap rescap desktop uap3 uap5 uap18">
 
 	<Identity
 	  Name="7fc8472b-de72-4abb-b77f-dd37af6f25da"
@@ -20,7 +21,7 @@
 
 	<Properties>
 		<DisplayName>deRemind</DisplayName>
-		<PublisherDisplayName>dinar</PublisherDisplayName>
+		<PublisherDisplayName>Dinara Denis</PublisherDisplayName>
 		<Logo>Assets\StoreLogo.png</Logo>
 	</Properties>
 
@@ -36,15 +37,18 @@
 	<Applications>
 		<Application Id="App"
 		  Executable="$targetnametoken$.exe"
-		  EntryPoint="$targetentrypoint$">
+		  EntryPoint="$targetentrypoint$" uap18:TrustLevel="mediumIL" uap18:RuntimeBehavior="windowsApp">
 			<uap:VisualElements
 			  DisplayName="deRemind"
 			  Description="deRemind - Smart Reminder Application"
 			  BackgroundColor="transparent"
 			  Square150x150Logo="Assets\Square150x150Logo.png"
 			  Square44x44Logo="Assets\Square44x44Logo.png">
-				<uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+				<uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png"  Square71x71Logo="Assets\SmallTile.png" Square310x310Logo="Assets\LargeTile.png"/>
 				<uap:SplashScreen Image="Assets\SplashScreen.png" />
+				<uap:LockScreen BadgeLogo="Assets\BadgeLogo.png" Notification="badgeAndTileText"/>
+				<uap:InitialRotationPreference>
+					<uap:Rotation Preference="landscape"/></uap:InitialRotationPreference>
 			</uap:VisualElements>
 
 			<Extensions>
@@ -70,8 +74,6 @@
 	</Applications>
 
 	<Capabilities>
-		<uap:Capability Name="appointments"/>
-		<Capability Name="internetClient"/>
 		<rescap:Capability Name="runFullTrust"/>
 	</Capabilities>
 
