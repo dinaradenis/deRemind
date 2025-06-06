@@ -15,7 +15,7 @@
 	<Identity
 	  Name="7fc8472b-de72-4abb-b77f-dd37af6f25da"
 	  Publisher="CN=Dinara Denis"
-	  Version="1.0.0.0" />
+	  Version="1.0.1.0" />
 
 	<mp:PhoneIdentity PhoneProductId="7fc8472b-de72-4abb-b77f-dd37af6f25da" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
