@@ -20,13 +20,14 @@
         <!-- Main Content -->
         <Grid Grid.Row="1" Margin="20">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300"/>
+                <ColumnDefinition Width="Auto" MinWidth="300"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <!-- Add Reminder Panel -->
             <StackPanel Grid.Column="0" Spacing="15" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" 
-                       Padding="20" CornerRadius="8">
+                       Padding="20" CornerRadius="8" HorizontalAlignment="Left" VerticalAlignment="Top"
+                       MinWidth="300" MaxWidth="450">
 
                 <TextBlock Text="Create New Reminder" FontSize="20" FontWeight="SemiBold"/>
 
@@ -42,10 +43,12 @@
                         Height="80"/>
 
                 <DatePicker x:Name="ReminderDatePicker" 
-                           Header="Date"/>
+                           Header="Date"
+                           HorizontalAlignment="Stretch"/>
 
                 <TimePicker x:Name="ReminderTimePicker" 
-                           Header="Time"/>
+                           Header="Time"
+                           HorizontalAlignment="Stretch"/>
 
                 <CheckBox x:Name="RepeatingCheckBox" 
                          Content="Repeating Reminder"/>
@@ -53,7 +56,8 @@
                 <ComboBox x:Name="RepeatIntervalComboBox" 
                          Header="Repeat Every" 
                          Visibility="Collapsed"
-                         SelectedIndex="0">
+                         SelectedIndex="0"
+                         HorizontalAlignment="Stretch">
                     <ComboBoxItem Content="Daily"/>
                     <ComboBoxItem Content="Weekly"/>
                     <ComboBoxItem Content="Monthly"/>

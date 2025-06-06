@@ -8,11 +8,14 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Shapes;
+using Microsoft.Windows.AppLifecycle;
 using Microsoft.Windows.AppNotifications;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,6 +39,16 @@ namespace deRemind
         public App()
         {
             InitializeComponent();
+            var instance = Microsoft.Windows.AppLifecycle.AppInstance.FindOrRegisterForKey("main");
+
+            if(!instance.IsCurrent)
+        {
+                // Redirect the activation to the primary instance
+                instance.RedirectActivationToAsync(Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs());
+                Environment.Exit(0); // Make sure this instance quits
+            }
+
+            instance.Activated += OnAppActivated;
 
             // Initialize notification system
             AppNotificationManager.Default.NotificationInvoked += OnNotificationInvoked;
@@ -58,6 +71,27 @@ namespace deRemind
                 await InitializeStartupTaskAsync();
                 await _window.InitializeRemindersAsync();
             });
+        }
+
+        private void OnAppActivated(object sender, AppActivationArguments args)
+        {
+            if (_window is not null)
+            {
+                _window.DispatcherQueue.TryEnqueue(() =>
+                {
+                    _window.Activate();
+                    BringToFront(_window);
+                });
+            }
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        private static void BringToFront(Window window)
+        {
+            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+            SetForegroundWindow(hwnd);
         }
 
         // Optional helper method
